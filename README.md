@@ -9,7 +9,7 @@ A FastAPI server bridges to iTerm2 on your Mac and exposes session state over HT
 - macOS with iTerm2 (with the Python API enabled: `iTerm2 → Settings → General → Magic → Enable Python API`)
 - Python 3.12+
 - Node.js 20+ and `npx`
-- Expo Go on your phone (for the mobile client)
+- Expo Go on your phone (for the mobile client) or create a build for Android / iOS
 
 ## Setup
 
