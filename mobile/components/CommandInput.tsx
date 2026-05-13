@@ -1,192 +1,243 @@
-import React, { useState } from "react";
+import React, { useImperativeHandle, useRef, useState } from "react";
 import {
-  Platform,
-  ScrollView,
+  Pressable,
   StyleSheet,
   Text,
   TextInput,
-  TouchableOpacity,
   View,
 } from "react-native";
 
-import { theme } from "../lib/theme";
+import { useTheme } from "../lib/ThemeContext";
 
 interface Props {
   onSend: (text: string, newline?: boolean) => void;
-  onSignal: (signal: string) => void;
 }
 
-const MONO = Platform.select({ ios: "Menlo", android: "monospace", default: "Courier" });
+export interface CommandInputHandle {
+  focus: () => void;
+}
 
-type QuickKey = {
+type SpecialKey = {
   label: string;
-  kind: "signal" | "raw";
-  value: string;
-  tone?: "danger" | "warn" | "muted" | "default";
+  send: string; // raw bytes to send
 };
 
-const QUICK_KEYS: QuickKey[] = [
-  { label: "Tab", kind: "raw", value: "\t" },
-  { label: "Esc", kind: "raw", value: "\x1b" },
-  { label: "↑", kind: "raw", value: "\x1b[A" },
-  { label: "↓", kind: "raw", value: "\x1b[B" },
-  { label: "←", kind: "raw", value: "\x1b[D" },
-  { label: "→", kind: "raw", value: "\x1b[C" },
-  { label: "^C", kind: "signal", value: "ctrl-c", tone: "danger" },
-  { label: "^D", kind: "signal", value: "ctrl-d", tone: "warn" },
-  { label: "^Z", kind: "signal", value: "ctrl-z", tone: "muted" },
+const ROW_TOP: SpecialKey[] = [
+  { label: "ESC", send: "\x1b" },
+  { label: "/", send: "/" },
+  { label: "—", send: "-" },
+  { label: "HOME", send: "\x1b[H" },
+  { label: "↑", send: "\x1b[A" },
+  { label: "END", send: "\x1b[F" },
+  { label: "PGUP", send: "\x1b[5~" },
 ];
 
-function toneColor(tone: QuickKey["tone"]) {
-  switch (tone) {
-    case "danger":
-      return theme.colors.danger;
-    case "warn":
-      return theme.colors.warning;
-    case "muted":
-      return theme.colors.textSecondary;
-    default:
-      return theme.colors.primary;
-  }
-}
+const ROW_BOTTOM_SPECIAL: SpecialKey[] = [
+  { label: "TAB", send: "\t" },
+  // CTRL and ALT handled separately as sticky modifiers
+  { label: "←", send: "\x1b[D" },
+  { label: "↓", send: "\x1b[B" },
+  { label: "→", send: "\x1b[C" },
+  { label: "PGDN", send: "\x1b[6~" },
+];
 
-export function CommandInput({ onSend, onSignal }: Props) {
-  const [text, setText] = useState("");
-  const [inputHeight, setInputHeight] = useState(44);
+export const CommandInput = React.forwardRef<CommandInputHandle, Props>(
+  function CommandInput({ onSend }, ref) {
+    const t = useTheme();
+    const inputRef = useRef<TextInput>(null);
+    const [pendingCtrl, setPendingCtrl] = useState(false);
+    const [pendingAlt, setPendingAlt] = useState(false);
+    // Keep a tiny rotating buffer so onChangeText reliably fires.
+    const [buf, setBuf] = useState(" ");
 
-  const handleSend = () => {
-    if (text.trim()) {
-      onSend(text, true);
-      setText("");
-      setInputHeight(44);
-    }
-  };
+    useImperativeHandle(ref, () => ({
+      focus: () => inputRef.current?.focus(),
+    }));
 
-  const handleQuickKey = (k: QuickKey) => {
-    if (k.kind === "signal") {
-      onSignal(k.value);
-    } else {
-      onSend(k.value, false);
-    }
-  };
+    const sendChar = (ch: string) => {
+      if (!ch) return;
+      let toSend = ch;
+      if (pendingCtrl) {
+        const code = ch.toLowerCase().charCodeAt(0);
+        if (code >= 97 && code <= 122) {
+          // Ctrl-A..Z = 0x01..0x1a
+          toSend = String.fromCharCode(code - 96);
+        } else if (ch === " ") {
+          toSend = "\x00";
+        } else if (ch === "[") {
+          toSend = "\x1b";
+        }
+        setPendingCtrl(false);
+      }
+      if (pendingAlt) {
+        toSend = "\x1b" + toSend;
+        setPendingAlt(false);
+      }
+      onSend(toSend, false);
+    };
 
-  return (
-    <View style={styles.container}>
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.keysRow}
+    const handleChange = (next: string) => {
+      // Anything beyond the sentinel space is new input. After processing,
+      // reset back to the sentinel so subsequent keystrokes fire change.
+      if (next.length > buf.length) {
+        const added = next.slice(buf.length);
+        // Send each character with modifier handling
+        for (const ch of added) {
+          sendChar(ch);
+        }
+      } else if (next.length < buf.length) {
+        // User pressed backspace — send DEL for each removed char
+        const removed = buf.length - next.length;
+        for (let i = 0; i < removed; i++) {
+          onSend("\x7f", false);
+        }
+      }
+      // Re-arm with the sentinel
+      setBuf(" ");
+    };
+
+    const handleKeyPress = (e: {
+      nativeEvent: { key: string };
+    }) => {
+      // On Android onKeyPress is unreliable for chars but fires for special keys.
+      // Backspace at the sentinel boundary still flows through handleChange.
+      const k = e.nativeEvent.key;
+      if (k === "Enter") {
+        // Send newline (the onChangeText will likely also handle this; guard with no-op if not)
+        // We rely on onChangeText for the actual \n send. Leave this for special handling if needed.
+      }
+    };
+
+    const tapKey = (k: SpecialKey) => {
+      onSend(k.send, false);
+    };
+
+    const tapCtrl = () => {
+      setPendingCtrl((v) => !v);
+      setPendingAlt(false);
+      inputRef.current?.focus();
+    };
+    const tapAlt = () => {
+      setPendingAlt((v) => !v);
+      setPendingCtrl(false);
+      inputRef.current?.focus();
+    };
+
+    return (
+      <View
+        style={{
+          borderTopWidth: 1,
+          borderTopColor: t.colors.border,
+          backgroundColor: t.colors.bg,
+        }}
       >
-        {QUICK_KEYS.map((k) => {
-          const color = toneColor(k.tone);
-          return (
-            <TouchableOpacity
-              key={k.label}
-              style={[styles.keyBtn, { borderColor: color }]}
-              onPress={() => handleQuickKey(k)}
-            >
-              <Text style={[styles.keyText, { color }]}>{k.label}</Text>
-            </TouchableOpacity>
-          );
-        })}
-      </ScrollView>
-
-      <View style={styles.inputRow}>
-        <Text style={styles.prompt}>$</Text>
+        {/* Hidden input — captures keystrokes from the system keyboard */}
         <TextInput
-          style={[styles.input, { height: Math.min(Math.max(44, inputHeight), 140) }]}
-          value={text}
-          onChangeText={setText}
-          placeholder="Type a command…"
-          placeholderTextColor={theme.colors.textMuted}
+          ref={inputRef}
+          value={buf}
+          onChangeText={handleChange}
+          onKeyPress={handleKeyPress}
           autoCapitalize="none"
           autoCorrect={false}
           autoComplete="off"
           spellCheck={false}
           multiline
-          onContentSizeChange={(e) =>
-            setInputHeight(e.nativeEvent.contentSize.height + 12)
-          }
+          blurOnSubmit={false}
+          // Visually invisible but focusable
+          style={{
+            position: "absolute",
+            opacity: 0,
+            height: 1,
+            width: 1,
+            left: -1000,
+            top: -1000,
+          }}
         />
-        <TouchableOpacity
-          style={[styles.sendBtn, !text.trim() && styles.sendBtnDisabled]}
-          onPress={handleSend}
-          disabled={!text.trim()}
-        >
-          <Text style={styles.sendText}>Send</Text>
-        </TouchableOpacity>
+
+        {/* Key bar */}
+        <KeyRow keys={ROW_TOP} onPress={tapKey} />
+        <View style={{ flexDirection: "row" }}>
+          <KeyCell label="TAB" onPress={() => onSend("\t", false)} />
+          <KeyCell
+            label="CTRL"
+            active={pendingCtrl}
+            onPress={tapCtrl}
+          />
+          <KeyCell
+            label="ALT"
+            active={pendingAlt}
+            onPress={tapAlt}
+          />
+          {ROW_BOTTOM_SPECIAL.filter((k) => k.label !== "TAB").map((k) => (
+            <KeyCell key={k.label} label={k.label} onPress={() => tapKey(k)} />
+          ))}
+        </View>
       </View>
+    );
+  }
+);
+
+function KeyRow({
+  keys,
+  onPress,
+}: {
+  keys: SpecialKey[];
+  onPress: (k: SpecialKey) => void;
+}) {
+  return (
+    <View style={{ flexDirection: "row" }}>
+      {keys.map((k) => (
+        <KeyCell key={k.label} label={k.label} onPress={() => onPress(k)} />
+      ))}
     </View>
   );
 }
 
+function KeyCell({
+  label,
+  onPress,
+  active,
+}: {
+  label: string;
+  onPress: () => void;
+  active?: boolean;
+}) {
+  const t = useTheme();
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.cell,
+        {
+          backgroundColor: active
+            ? t.colors.fg
+            : pressed
+              ? t.colors.bgElev
+              : "transparent",
+        },
+      ]}
+    >
+      <Text
+        style={{
+          color: active ? t.colors.bg : t.colors.fg,
+          fontSize: 14,
+          fontWeight: "600",
+          fontFamily: t.fonts.mono,
+          letterSpacing: 0.4,
+        }}
+      >
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
 const styles = StyleSheet.create({
-  container: {
-    backgroundColor: theme.colors.surface,
-    borderTopWidth: 1,
-    borderTopColor: theme.colors.border,
-    paddingHorizontal: theme.spacing.sm,
-    paddingTop: theme.spacing.sm,
-    paddingBottom: theme.spacing.sm,
-    gap: 10,
-  },
-  keysRow: {
-    flexDirection: "row",
-    gap: 8,
-    paddingRight: 8,
-  },
-  keyBtn: {
-    borderWidth: 1,
-    borderRadius: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    minWidth: 48,
-    alignItems: "center",
-    backgroundColor: theme.colors.background,
-  },
-  keyText: {
-    fontFamily: MONO,
-    fontSize: 15,
-    fontWeight: "700",
-  },
-  inputRow: {
-    flexDirection: "row",
-    alignItems: "flex-end",
-    gap: 8,
-  },
-  prompt: {
-    color: theme.colors.success,
-    fontFamily: MONO,
-    fontSize: 18,
-    fontWeight: "700",
-    paddingBottom: 10,
-  },
-  input: {
+  cell: {
     flex: 1,
-    backgroundColor: theme.colors.background,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingTop: 10,
-    paddingBottom: 10,
-    color: theme.colors.text,
-    fontFamily: MONO,
-    fontSize: 16,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    textAlignVertical: "top",
-  },
-  sendBtn: {
-    backgroundColor: theme.colors.primary,
-    borderRadius: 8,
-    paddingHorizontal: 18,
+    alignItems: "center",
+    justifyContent: "center",
     paddingVertical: 12,
-  },
-  sendBtnDisabled: {
-    opacity: 0.4,
-  },
-  sendText: {
-    color: "#fff",
-    fontWeight: "700",
-    fontSize: 15,
+    minHeight: 44,
   },
 });

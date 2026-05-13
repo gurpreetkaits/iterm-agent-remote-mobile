@@ -5,6 +5,7 @@ import type {
   ScreenOutput,
   SessionGitInfo,
   SessionInfo,
+  SystemInfo,
   WindowInfo,
 } from "./types";
 
@@ -40,7 +41,7 @@ export async function checkHealth() {
 }
 
 export async function getSystemInfo() {
-  return request<Record<string, unknown>>("/api/system/info");
+  return request<SystemInfo>("/api/system/info");
 }
 
 // Sessions

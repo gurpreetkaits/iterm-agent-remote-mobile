@@ -1,33 +1,66 @@
-import React, { useCallback, useEffect, useRef } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
-  FlatList,
+  Pressable,
   RefreshControl,
-  StyleSheet,
+  ScrollView,
   Text,
-  TouchableOpacity,
   View,
 } from "react-native";
 import { router } from "expo-router";
 
-import { ProcessCard } from "../../components/ProcessCard";
-import { StatusBadge } from "../../components/StatusBadge";
-import { startAgent } from "../../lib/api";
-import { theme } from "../../lib/theme";
-import type { DashboardData, WSMessage } from "../../lib/types";
+import {
+  Badge,
+  Bar,
+  Card,
+  CardRow,
+  Dot,
+  SectionLabel,
+} from "../../components/ui";
+import { getSystemInfo } from "../../lib/api";
+import { useTheme } from "../../lib/ThemeContext";
+import type { DashboardData, SystemInfo, WSMessage } from "../../lib/types";
 import { DashboardWebSocket } from "../../lib/websocket";
 import { useStore } from "../../store/useStore";
 
+function fmtUptime(seconds: number): string {
+  if (seconds <= 0) return "—";
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (d > 0) return `${d}d`;
+  if (h > 0) return `${h}h`;
+  return `${m}m`;
+}
+
+function fmtBytes(bytes: number): string {
+  const gb = bytes / 1024 / 1024 / 1024;
+  return gb >= 10 ? gb.toFixed(0) : gb.toFixed(1);
+}
+
+function hostFromUrl(url: string | null): string {
+  if (!url) return "—";
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url.replace(/^https?:\/\//, "").split(":")[0];
+  }
+}
+
 export default function DashboardScreen() {
+  const t = useTheme();
   const {
     sessions,
     agents,
     itermConnected,
+    serverUrl,
     setSessions,
     setAgents,
     setItermConnected,
+    setActiveSession,
   } = useStore();
   const wsRef = useRef<DashboardWebSocket | null>(null);
-  const [refreshing, setRefreshing] = React.useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [sysInfo, setSysInfo] = useState<SystemInfo | null>(null);
 
   const handleMessage = useCallback(
     (msg: WSMessage) => {
@@ -48,151 +81,357 @@ export default function DashboardScreen() {
     return () => ws.disconnect();
   }, [handleMessage]);
 
-  const onRefresh = useCallback(() => {
-    setRefreshing(true);
-    // The WS feed will update automatically, just trigger a visual refresh
-    setTimeout(() => setRefreshing(false), 1000);
+  const fetchSys = useCallback(async () => {
+    try {
+      const info = await getSystemInfo();
+      setSysInfo(info);
+    } catch {
+      // ignore
+    }
   }, []);
 
-  const handleStartAgent = async (agent: "claude" | "codex") => {
-    try {
-      await startAgent(agent);
-    } catch {
-      // handle silently
-    }
-  };
+  useEffect(() => {
+    fetchSys();
+    const id = setInterval(fetchSys, 5000);
+    return () => clearInterval(id);
+  }, [fetchSys]);
 
-  const agentSessions = sessions.filter((s) => s.is_agent);
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await fetchSys();
+    setTimeout(() => setRefreshing(false), 600);
+  }, [fetchSys]);
+
+  const cpuValue = sysInfo?.cpu_percent ?? 0;
+  const memValue = sysInfo?.memory_percent ?? 0;
+  const memUsedGb = sysInfo ? fmtBytes(sysInfo.memory_used) : "—";
 
   return (
-    <FlatList
-      style={styles.container}
-      contentContainerStyle={styles.content}
+    <ScrollView
+      style={{ flex: 1, backgroundColor: t.colors.bg }}
+      contentContainerStyle={{ padding: 20, paddingBottom: 40 }}
       refreshControl={
         <RefreshControl
           refreshing={refreshing}
           onRefresh={onRefresh}
-          tintColor={theme.colors.primary}
+          tintColor={t.colors.fg}
         />
       }
-      ListHeaderComponent={
-        <>
-          {/* Status Bar */}
-          <View style={styles.statusRow}>
-            <StatusBadge
-              label={itermConnected ? "iTerm Connected" : "iTerm Disconnected"}
-              color={
-                itermConnected ? theme.colors.success : theme.colors.danger
-              }
-            />
-            <Text style={styles.statsText}>
-              {sessions.length} sessions | {agents.length} agents
+    >
+      <View
+        style={{
+          backgroundColor: t.colors.bgElev,
+          borderWidth: 1,
+          borderColor: t.colors.border,
+          borderRadius: t.radius.md,
+          padding: 18,
+          marginBottom: 24,
+        }}
+      >
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: "space-between",
+            marginBottom: 14,
+          }}
+        >
+          <View style={{ flex: 1, marginRight: 8 }}>
+            <View
+              style={{ flexDirection: "row", alignItems: "center", gap: 8 }}
+            >
+              <Dot tone={itermConnected ? "green" : "red"} />
+              <Text
+                style={{
+                  fontFamily: t.fonts.mono,
+                  fontSize: 13,
+                  fontWeight: "500",
+                  color: t.colors.fg,
+                  flexShrink: 1,
+                }}
+                numberOfLines={1}
+              >
+                {sysInfo?.hostname || "—"}
+              </Text>
+            </View>
+            <Text
+              style={{
+                fontFamily: t.fonts.mono,
+                fontSize: 11,
+                color: t.colors.fgMuted,
+                marginTop: 4,
+              }}
+              numberOfLines={1}
+            >
+              {hostFromUrl(serverUrl)} · tailnet
             </Text>
           </View>
+          <Badge tone={itermConnected ? "green" : "red"}>
+            {itermConnected ? "CONNECTED" : "OFFLINE"}
+          </Badge>
+        </View>
 
-          {/* Quick Actions */}
-          <View style={styles.quickActions}>
-            <TouchableOpacity
-              style={[styles.actionBtn, { borderColor: theme.colors.claude }]}
-              onPress={() => handleStartAgent("claude")}
-            >
-              <Text style={[styles.actionText, { color: theme.colors.claude }]}>
-                + Claude
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.actionBtn, { borderColor: theme.colors.codex }]}
-              onPress={() => handleStartAgent("codex")}
-            >
-              <Text style={[styles.actionText, { color: theme.colors.codex }]}>
-                + Codex
-              </Text>
-            </TouchableOpacity>
-          </View>
+        <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
+          <StatBox
+            label="Sessions"
+            value={String(sessions.length)}
+            sub={`${agents.length} agents`}
+          />
+          <StatBox
+            label="Uptime"
+            value={fmtUptime(sysInfo?.host_uptime_seconds ?? 0)}
+            sub="host machine"
+          />
+          <StatBox
+            label="CPU"
+            value={
+              <>
+                {cpuValue.toFixed(0)}
+                <Text style={{ fontSize: 14, color: t.colors.fgMuted }}>%</Text>
+              </>
+            }
+            bar={cpuValue / 100}
+          />
+          <StatBox
+            label="Memory"
+            value={
+              <>
+                {memUsedGb}
+                <Text style={{ fontSize: 14, color: t.colors.fgMuted }}>G</Text>
+              </>
+            }
+            bar={memValue / 100}
+          />
+        </View>
+      </View>
 
-          {/* Section Header */}
-          <Text style={styles.sectionTitle}>
-            Agent Processes ({agents.length})
-          </Text>
-        </>
-      }
-      data={agents}
-      keyExtractor={(item) => String(item.pid)}
-      renderItem={({ item }) => (
-        <ProcessCard
-          process={item}
+      <SectionLabel>Quick actions</SectionLabel>
+      <View
+        style={{
+          flexDirection: "row",
+          flexWrap: "wrap",
+          gap: 10,
+          marginBottom: 24,
+        }}
+      >
+        <QuickAction
+          title="Sessions"
+          sub={`${sessions.length} active`}
+          onPress={() => router.push("/(tabs)/sessions")}
+        />
+        <QuickAction
+          title="Open last"
+          sub={sessions[0]?.name || "—"}
           onPress={() => {
-            if (item.session_id) {
-              router.push(`/session/${item.session_id}`);
+            if (sessions[0]) {
+              setActiveSession(sessions[0].session_id);
+              router.push("/(tabs)/control");
             }
           }}
         />
-      )}
-      ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
-      ListEmptyComponent={
-        <View style={styles.empty}>
-          <Text style={styles.emptyText}>No agent processes detected</Text>
-          <Text style={styles.emptyHint}>
-            Start a Claude or Codex session above
-          </Text>
-        </View>
-      }
-    />
+        <QuickAction
+          title="Agents"
+          sub={`${agents.length} processes`}
+          onPress={() => router.push("/(tabs)/sessions")}
+        />
+        <QuickAction
+          title="Tailscale"
+          sub={hostFromUrl(serverUrl)}
+          onPress={() => router.push("/(tabs)/settings")}
+        />
+      </View>
+
+      <SectionLabel>Recent activity</SectionLabel>
+      <Card>
+        {sessions.length === 0 ? (
+          <CardRow last>
+            <Text style={{ color: t.colors.fgMuted, fontSize: 13 }}>
+              No sessions yet
+            </Text>
+          </CardRow>
+        ) : (
+          sessions.slice(0, 4).map((s, i) => (
+            <CardRow
+              key={s.session_id}
+              last={i === Math.min(sessions.length, 4) - 1}
+              onPress={() => {
+                setActiveSession(s.session_id);
+                router.push("/(tabs)/control");
+              }}
+            >
+              <View
+                style={{
+                  flexDirection: "row",
+                  gap: 10,
+                  alignItems: "center",
+                  flex: 1,
+                }}
+              >
+                <View
+                  style={{
+                    width: 28,
+                    height: 28,
+                    borderRadius: 6,
+                    backgroundColor: t.colors.bgElev,
+                    borderWidth: 1,
+                    borderColor: t.colors.border,
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  <Text
+                    style={{
+                      fontFamily: t.fonts.mono,
+                      fontSize: 11,
+                      fontWeight: "600",
+                      color: t.colors.fg,
+                    }}
+                  >
+                    {s.is_agent ? "▶" : "•"}
+                  </Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text
+                    style={{ fontSize: 13, color: t.colors.fg }}
+                    numberOfLines={1}
+                  >
+                    <Text
+                      style={{ fontFamily: t.fonts.mono, fontWeight: "500" }}
+                    >
+                      {s.name || "shell"}
+                    </Text>
+                    {s.agent_type ? ` · ${s.agent_type}` : ""}
+                  </Text>
+                  <Text
+                    style={{
+                      fontFamily: t.fonts.mono,
+                      fontSize: 11,
+                      color: t.colors.fgMuted,
+                      marginTop: 2,
+                    }}
+                    numberOfLines={1}
+                  >
+                    {s.grid_size.width}×{s.grid_size.height} · tab {s.tab_id}
+                  </Text>
+                </View>
+              </View>
+              <Text style={{ color: t.colors.fgSubtle, fontSize: 16 }}>›</Text>
+            </CardRow>
+          ))
+        )}
+      </Card>
+    </ScrollView>
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: theme.colors.background,
-  },
-  content: {
-    padding: theme.spacing.md,
-  },
-  statusRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: theme.spacing.md,
-  },
-  statsText: {
-    fontSize: theme.fontSize.sm,
-    color: theme.colors.textSecondary,
-  },
-  quickActions: {
-    flexDirection: "row",
-    gap: 12,
-    marginBottom: theme.spacing.lg,
-  },
-  actionBtn: {
-    flex: 1,
-    borderWidth: 1,
-    borderRadius: theme.borderRadius.md,
-    padding: 14,
-    alignItems: "center",
-    backgroundColor: theme.colors.surface,
-  },
-  actionText: {
-    fontSize: theme.fontSize.md,
-    fontWeight: "700",
-  },
-  sectionTitle: {
-    fontSize: theme.fontSize.lg,
-    fontWeight: "700",
-    color: theme.colors.text,
-    marginBottom: theme.spacing.sm,
-  },
-  empty: {
-    alignItems: "center",
-    paddingVertical: 40,
-  },
-  emptyText: {
-    fontSize: theme.fontSize.md,
-    color: theme.colors.textSecondary,
-  },
-  emptyHint: {
-    fontSize: theme.fontSize.sm,
-    color: theme.colors.textMuted,
-    marginTop: 8,
-  },
-});
+function StatBox({
+  label,
+  value,
+  sub,
+  bar,
+}: {
+  label: string;
+  value: React.ReactNode;
+  sub?: string;
+  bar?: number;
+}) {
+  const t = useTheme();
+  return (
+    <View
+      style={{
+        flexGrow: 1,
+        flexBasis: "47%",
+        backgroundColor: t.colors.bg,
+        borderWidth: 1,
+        borderColor: t.colors.border,
+        borderRadius: t.radius.sm,
+        padding: 12,
+      }}
+    >
+      <Text
+        style={{
+          fontSize: 11,
+          color: t.colors.fgMuted,
+          fontFamily: t.fonts.mono,
+          letterSpacing: 0.4,
+        }}
+      >
+        {label}
+      </Text>
+      <Text
+        style={{
+          fontSize: 22,
+          fontWeight: "600",
+          color: t.colors.fg,
+          fontFamily: t.fonts.mono,
+          marginTop: 6,
+          letterSpacing: -0.4,
+        }}
+      >
+        {value}
+      </Text>
+      {bar !== undefined ? (
+        <Bar value={bar} />
+      ) : sub ? (
+        <Text
+          style={{
+            fontSize: 11,
+            color: t.colors.fgMuted,
+            fontFamily: t.fonts.mono,
+            marginTop: 6,
+          }}
+          numberOfLines={1}
+        >
+          {sub}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+function QuickAction({
+  title,
+  sub,
+  onPress,
+}: {
+  title: string;
+  sub: string;
+  onPress?: () => void;
+}) {
+  const t = useTheme();
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => ({
+        flexGrow: 1,
+        flexBasis: "47%",
+        backgroundColor: pressed ? t.colors.bgElev : t.colors.bg,
+        borderWidth: 1,
+        borderColor: pressed ? t.colors.borderStrong : t.colors.border,
+        borderRadius: t.radius.sm,
+        padding: 14,
+      })}
+    >
+      <Text
+        style={{
+          fontSize: 13,
+          fontWeight: "500",
+          color: t.colors.fg,
+          marginBottom: 2,
+        }}
+      >
+        {title}
+      </Text>
+      <Text
+        style={{
+          fontSize: 11,
+          color: t.colors.fgMuted,
+          fontFamily: t.fonts.mono,
+        }}
+        numberOfLines={1}
+      >
+        {sub}
+      </Text>
+    </Pressable>
+  );
+}

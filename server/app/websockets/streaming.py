@@ -25,13 +25,16 @@ async def session_output(websocket: WebSocket, session_id: str, token: str = "")
     bridge = await ITermBridge.get_instance()
     stop_event = asyncio.Event()
 
-    async def on_screen_update(lines):
+    async def on_screen_update(payload):
         try:
-            if lines is not None:
+            if payload is not None:
+                lines = payload["lines"] if isinstance(payload, dict) else payload
+                cursor = payload.get("cursor") if isinstance(payload, dict) else None
                 await websocket.send_json({
                     "type": "screen",
                     "session_id": session_id,
                     "lines": lines,
+                    "cursor": cursor,
                     "timestamp": time.time(),
                 })
             else:
@@ -40,13 +43,14 @@ async def session_output(websocket: WebSocket, session_id: str, token: str = "")
             stop_event.set()
 
     try:
-        # Send initial screen contents (styled)
+        # Send initial screen contents (styled, with cursor)
         try:
-            initial = await bridge.get_screen_styled(session_id)
+            initial = await bridge.get_screen_styled_with_cursor(session_id)
             await websocket.send_json({
                 "type": "screen",
                 "session_id": session_id,
-                "lines": initial,
+                "lines": initial["lines"],
+                "cursor": initial["cursor"],
                 "timestamp": time.time(),
             })
         except Exception:

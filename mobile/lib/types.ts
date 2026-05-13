@@ -43,6 +43,20 @@ export interface StyledRun {
 
 export type StyledLine = StyledRun[];
 
+export interface SystemInfo {
+  hostname: string;
+  platform: string;
+  python_version: string;
+  iterm_connected: boolean;
+  uptime_seconds: number;
+  host_uptime_seconds: number;
+  cpu_percent: number;
+  cpu_count: number;
+  memory_total: number;
+  memory_used: number;
+  memory_percent: number;
+}
+
 export interface SessionGitInfo {
   cwd: string | null;
   is_repo: boolean;
@@ -88,10 +102,16 @@ export interface DashboardData {
   timestamp: number;
 }
 
+export interface Cursor {
+  x: number;
+  y: number;
+}
+
 export interface ScreenData {
   type: "screen";
   session_id: string;
   lines: StyledLine[];
+  cursor?: Cursor | null;
   timestamp: number;
 }
 

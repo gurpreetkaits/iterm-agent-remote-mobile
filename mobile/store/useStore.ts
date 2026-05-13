@@ -1,8 +1,10 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useEffect, useState } from "react";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
 import type { ProcessInfo, SessionInfo, StyledLine } from "../lib/types";
+import type { ThemeMode } from "../lib/theme";
 
 interface DashboardState {
   // Connection
@@ -30,6 +32,18 @@ interface DashboardState {
   setActiveSession: (id: string | null) => void;
   setOutput: (sessionId: string, lines: StyledLine[]) => void;
   clearOutput: (sessionId: string) => void;
+
+  // UI prefs
+  themeMode: ThemeMode;
+  setThemeMode: (mode: ThemeMode) => void;
+  notifySessionErrors: boolean;
+  notifyHostOffline: boolean;
+  notifyLongJobs: boolean;
+  setNotify: (key: "notifySessionErrors" | "notifyHostOffline" | "notifyLongJobs", value: boolean) => void;
+  autoReconnect: boolean;
+  setAutoReconnect: (value: boolean) => void;
+  terminalFontSize: number;
+  setTerminalFontSize: (size: number) => void;
 }
 
 export const useStore = create<DashboardState>()(
@@ -78,6 +92,19 @@ export const useStore = create<DashboardState>()(
           const { [sessionId]: _, ...rest } = state.outputBuffer;
           return { outputBuffer: rest };
         }),
+
+      // UI prefs
+      themeMode: "auto",
+      setThemeMode: (themeMode) => set({ themeMode }),
+      notifySessionErrors: true,
+      notifyHostOffline: true,
+      notifyLongJobs: false,
+      setNotify: (key, value) => set({ [key]: value } as any),
+      autoReconnect: true,
+      setAutoReconnect: (autoReconnect) => set({ autoReconnect }),
+      terminalFontSize: 14,
+      setTerminalFontSize: (terminalFontSize) =>
+        set({ terminalFontSize: Math.max(8, Math.min(32, terminalFontSize)) }),
     }),
     {
       name: "iterm-dashboard",
@@ -85,7 +112,25 @@ export const useStore = create<DashboardState>()(
       partialize: (state) => ({
         serverUrl: state.serverUrl,
         token: state.token,
+        themeMode: state.themeMode,
+        notifySessionErrors: state.notifySessionErrors,
+        notifyHostOffline: state.notifyHostOffline,
+        notifyLongJobs: state.notifyLongJobs,
+        autoReconnect: state.autoReconnect,
+        terminalFontSize: state.terminalFontSize,
       }),
     }
   )
 );
+
+export function useStoreHydrated(): boolean {
+  const [hydrated, setHydrated] = useState(() =>
+    useStore.persist.hasHydrated()
+  );
+  useEffect(() => {
+    const unsub = useStore.persist.onFinishHydration(() => setHydrated(true));
+    setHydrated(useStore.persist.hasHydrated());
+    return unsub;
+  }, []);
+  return hydrated;
+}

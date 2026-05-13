@@ -147,6 +147,25 @@ class ITermBridge:
         styled = extract_styled_lines(contents)
         return styled[-lines:]
 
+    async def get_screen_styled_with_cursor(
+        self, session_id: str, lines: int = 100
+    ) -> dict:
+        from app.services.screen_styles import extract_styled_lines
+
+        session = self._find_session(session_id)
+        contents = await session.async_get_screen_contents()
+        all_lines = extract_styled_lines(contents)
+        sliced = all_lines[-lines:]
+        try:
+            cur = contents.cursor_coord
+            top_y = contents.windowed_coord_range.coord_range.start.y
+            offset = max(0, len(all_lines) - len(sliced))
+            rel_y = cur.y - top_y - offset
+            cursor = {"x": int(cur.x), "y": int(rel_y)}
+        except Exception:
+            cursor = None
+        return {"lines": sliced, "cursor": cursor}
+
     # ── Send text / signals ──────────────────────────────────────────
 
     async def send_text(
@@ -296,7 +315,14 @@ class ITermBridge:
                         streamer.async_get(), timeout=10.0
                     )
                     if contents:
-                        await callback(extract_styled_lines(contents))
+                        lines = extract_styled_lines(contents)
+                        try:
+                            cur = contents.cursor_coord
+                            top_y = contents.windowed_coord_range.coord_range.start.y
+                            cursor = {"x": int(cur.x), "y": int(cur.y - top_y)}
+                        except Exception:
+                            cursor = None
+                        await callback({"lines": lines, "cursor": cursor})
                 except asyncio.TimeoutError:
                     # Send heartbeat
                     await callback(None)

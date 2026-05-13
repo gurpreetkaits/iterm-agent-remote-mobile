@@ -3,21 +3,25 @@ import {
   Alert,
   KeyboardAvoidingView,
   Platform,
-  StyleSheet,
+  Pressable,
+  ScrollView,
   Text,
   TextInput,
-  TouchableOpacity,
   View,
 } from "react-native";
 import { router } from "expo-router";
 
+import { LogoMark } from "../components/ui";
 import { checkHealth } from "../lib/api";
-import { theme } from "../lib/theme";
+import { useTheme } from "../lib/ThemeContext";
 import { useStore } from "../store/useStore";
 
 export default function LoginScreen() {
-  const [serverUrl, setServerUrl] = useState("");
-  const [token, setToken] = useState("");
+  const t = useTheme();
+  const savedUrl = useStore((s) => s.serverUrl);
+  const savedToken = useStore((s) => s.token);
+  const [serverUrl, setServerUrl] = useState(savedUrl ?? "");
+  const [token, setToken] = useState(savedToken ?? "");
   const [loading, setLoading] = useState(false);
   const setConnection = useStore((s) => s.setConnection);
   const setConnected = useStore((s) => s.setConnected);
@@ -26,12 +30,11 @@ export default function LoginScreen() {
   const handleConnect = async () => {
     const url = serverUrl.replace(/\/$/, "");
     if (!url || !token) {
-      Alert.alert("Error", "Please enter both server URL and token");
+      Alert.alert("Missing fields", "Server URL and token are both required");
       return;
     }
 
     setLoading(true);
-    // Set connection first so API client can use it
     setConnection(url, token);
 
     try {
@@ -41,10 +44,7 @@ export default function LoginScreen() {
       router.replace("/(tabs)");
     } catch (e: any) {
       setConnected(false);
-      Alert.alert(
-        "Connection Failed",
-        e.message || "Could not connect to server"
-      );
+      Alert.alert("Connection failed", e.message || "Could not reach server");
     } finally {
       setLoading(false);
     }
@@ -52,119 +52,144 @@ export default function LoginScreen() {
 
   return (
     <KeyboardAvoidingView
-      style={styles.container}
+      style={{ flex: 1, backgroundColor: t.colors.bg }}
       behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
-      <View style={styles.content}>
-        <Text style={styles.title}>iTerm Dashboard</Text>
-        <Text style={styles.subtitle}>Connect to your Mac server</Text>
-
-        <View style={styles.form}>
-          <Text style={styles.label}>Server URL</Text>
-          <TextInput
-            style={styles.input}
-            value={serverUrl}
-            onChangeText={setServerUrl}
-            placeholder="http://100.x.x.x:8420"
-            placeholderTextColor={theme.colors.textMuted}
-            autoCapitalize="none"
-            autoCorrect={false}
-            keyboardType="url"
-          />
-
-          <Text style={styles.label}>API Token</Text>
-          <TextInput
-            style={styles.input}
-            value={token}
-            onChangeText={setToken}
-            placeholder="Your API token"
-            placeholderTextColor={theme.colors.textMuted}
-            autoCapitalize="none"
-            autoCorrect={false}
-            secureTextEntry
-          />
-
-          <TouchableOpacity
-            style={[styles.button, loading && styles.buttonDisabled]}
-            onPress={handleConnect}
-            disabled={loading}
+      <ScrollView
+        contentContainerStyle={{
+          flexGrow: 1,
+          justifyContent: "center",
+          padding: 24,
+        }}
+        keyboardShouldPersistTaps="handled"
+      >
+        <View style={{ alignItems: "center", marginBottom: 32 }}>
+          <LogoMark size={40} />
+          <Text
+            style={{
+              fontSize: 28,
+              fontWeight: "700",
+              color: t.colors.fg,
+              marginTop: 12,
+              letterSpacing: -0.6,
+            }}
           >
-            <Text style={styles.buttonText}>
-              {loading ? "Connecting..." : "Connect"}
-            </Text>
-          </TouchableOpacity>
+            tmx
+          </Text>
+          <Text
+            style={{
+              fontSize: 14,
+              color: t.colors.fgMuted,
+              marginTop: 4,
+            }}
+          >
+            Connect to your Mac over Tailscale
+          </Text>
         </View>
 
-        <Text style={styles.hint}>
-          Use your Tailscale IP or ngrok URL.{"\n"}
-          Token is in server/.env
+        <View style={{ gap: 14 }}>
+          <View>
+            <Text
+              style={{
+                fontSize: 11,
+                color: t.colors.fgMuted,
+                fontFamily: t.fonts.mono,
+                marginBottom: 6,
+                letterSpacing: 0.6,
+              }}
+            >
+              SERVER URL
+            </Text>
+            <TextInput
+              style={{
+                backgroundColor: t.colors.bgElev,
+                borderWidth: 1,
+                borderColor: t.colors.border,
+                borderRadius: 8,
+                paddingHorizontal: 12,
+                paddingVertical: 12,
+                color: t.colors.fg,
+                fontFamily: t.fonts.mono,
+                fontSize: 14,
+              }}
+              value={serverUrl}
+              onChangeText={setServerUrl}
+              placeholder="http://100.x.x.x:8420"
+              placeholderTextColor={t.colors.fgSubtle}
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoComplete="off"
+              keyboardType="url"
+            />
+          </View>
+
+          <View>
+            <Text
+              style={{
+                fontSize: 11,
+                color: t.colors.fgMuted,
+                fontFamily: t.fonts.mono,
+                marginBottom: 6,
+                letterSpacing: 0.6,
+              }}
+            >
+              API TOKEN
+            </Text>
+            <TextInput
+              style={{
+                backgroundColor: t.colors.bgElev,
+                borderWidth: 1,
+                borderColor: t.colors.border,
+                borderRadius: 8,
+                paddingHorizontal: 12,
+                paddingVertical: 12,
+                color: t.colors.fg,
+                fontFamily: t.fonts.mono,
+                fontSize: 14,
+              }}
+              value={token}
+              onChangeText={setToken}
+              placeholder="Paste from server/.env"
+              placeholderTextColor={t.colors.fgSubtle}
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoComplete="off"
+              secureTextEntry
+            />
+          </View>
+
+          <Pressable
+            onPress={handleConnect}
+            disabled={loading}
+            style={({ pressed }) => ({
+              backgroundColor: t.colors.fg,
+              borderRadius: 8,
+              padding: 14,
+              alignItems: "center",
+              marginTop: 8,
+              opacity: loading ? 0.5 : pressed ? 0.85 : 1,
+            })}
+          >
+            <Text style={{ color: t.colors.bg, fontSize: 14, fontWeight: "700" }}>
+              {loading ? "Connecting…" : "Connect"}
+            </Text>
+          </Pressable>
+        </View>
+
+        <Text
+          style={{
+            fontSize: 11,
+            color: t.colors.fgMuted,
+            fontFamily: t.fonts.mono,
+            textAlign: "center",
+            marginTop: 24,
+            lineHeight: 18,
+          }}
+        >
+          Use your Mac's Tailscale IP and the token from{" "}
+          <Text style={{ color: t.colors.fg }}>server/.env</Text>
         </Text>
-      </View>
+      </ScrollView>
     </KeyboardAvoidingView>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: theme.colors.background,
-  },
-  content: {
-    flex: 1,
-    justifyContent: "center",
-    padding: theme.spacing.xl,
-  },
-  title: {
-    fontSize: theme.fontSize.xxl,
-    fontWeight: "700",
-    color: theme.colors.text,
-    textAlign: "center",
-  },
-  subtitle: {
-    fontSize: theme.fontSize.md,
-    color: theme.colors.textSecondary,
-    textAlign: "center",
-    marginTop: 8,
-    marginBottom: 32,
-  },
-  form: {
-    gap: 12,
-  },
-  label: {
-    fontSize: theme.fontSize.sm,
-    color: theme.colors.textSecondary,
-    fontWeight: "600",
-  },
-  input: {
-    backgroundColor: theme.colors.surface,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: theme.borderRadius.sm,
-    padding: 14,
-    color: theme.colors.text,
-    fontSize: theme.fontSize.md,
-    fontFamily: "Courier",
-  },
-  button: {
-    backgroundColor: theme.colors.primary,
-    borderRadius: theme.borderRadius.sm,
-    padding: 16,
-    alignItems: "center",
-    marginTop: 8,
-  },
-  buttonDisabled: {
-    opacity: 0.6,
-  },
-  buttonText: {
-    color: "#fff",
-    fontSize: theme.fontSize.md,
-    fontWeight: "700",
-  },
-  hint: {
-    fontSize: theme.fontSize.xs,
-    color: theme.colors.textMuted,
-    textAlign: "center",
-    marginTop: 24,
-    lineHeight: 18,
-  },
-});

@@ -1,265 +1,207 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
-  Alert,
-  ScrollView,
-  StyleSheet,
+  Keyboard,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
   Text,
-  TextInput,
-  TouchableOpacity,
   View,
 } from "react-native";
+import { router, useNavigation } from "expo-router";
 
 import {
-  createTab,
-  listArrangements,
-  restoreArrangement,
-  saveArrangement,
-  splitPane,
-} from "../../lib/api";
-import { theme } from "../../lib/theme";
+  CommandInput,
+  CommandInputHandle,
+} from "../../components/CommandInput";
+import { TerminalOutput } from "../../components/TerminalOutput";
+import { sendText } from "../../lib/api";
+import { useTheme } from "../../lib/ThemeContext";
+import type { Cursor, ScreenData, WSMessage } from "../../lib/types";
+import { DashboardWebSocket } from "../../lib/websocket";
 import { useStore } from "../../store/useStore";
 
 export default function ControlScreen() {
-  const sessions = useStore((s) => s.sessions);
-  const [arrangements, setArrangements] = useState<string[]>([]);
-  const [newArrangementName, setNewArrangementName] = useState("");
+  const t = useTheme();
+  const nav = useNavigation();
+  const {
+    sessions,
+    activeSessionId,
+    outputBuffer,
+    setOutput,
+    setActiveSession,
+  } = useStore();
 
-  const fetchArrangements = useCallback(async () => {
-    try {
-      const data = await listArrangements();
-      setArrangements(data.arrangements);
-    } catch {
-      // ignore
+  const resolvedSession = (() => {
+    if (activeSessionId) {
+      const found = sessions.find((s) => s.session_id === activeSessionId);
+      if (found) return found;
     }
-  }, []);
+    return sessions[0] || null;
+  })();
+  const sessionId = resolvedSession?.session_id ?? "";
 
   useEffect(() => {
-    fetchArrangements();
-  }, [fetchArrangements]);
-
-  const handleNewTab = async () => {
-    try {
-      await createTab();
-      Alert.alert("Success", "New tab created");
-    } catch (e: any) {
-      Alert.alert("Error", e.message);
+    if (!activeSessionId && resolvedSession) {
+      setActiveSession(resolvedSession.session_id);
     }
-  };
+  }, [activeSessionId, resolvedSession, setActiveSession]);
 
-  const handleSplitH = async () => {
-    if (!sessions.length) return;
-    try {
-      await splitPane(sessions[0].session_id, false);
-      Alert.alert("Success", "Pane split horizontally");
-    } catch (e: any) {
-      Alert.alert("Error", e.message);
-    }
-  };
+  const lines = outputBuffer[sessionId] || [];
+  const wsRef = useRef<DashboardWebSocket | null>(null);
+  const inputRef = useRef<CommandInputHandle>(null);
+  const [, setConnected] = useState(false);
+  const [cursor, setCursor] = useState<Cursor | null>(null);
 
-  const handleSplitV = async () => {
-    if (!sessions.length) return;
-    try {
-      await splitPane(sessions[0].session_id, true);
-      Alert.alert("Success", "Pane split vertically");
-    } catch (e: any) {
-      Alert.alert("Error", e.message);
-    }
-  };
+  const handleMessage = useCallback(
+    (msg: WSMessage) => {
+      if (msg.type === "screen") {
+        const data = msg as ScreenData;
+        setOutput(data.session_id, data.lines);
+        if (data.cursor) setCursor(data.cursor);
+        setConnected(true);
+      } else if (msg.type === "heartbeat") {
+        setConnected(true);
+      }
+    },
+    [setOutput]
+  );
 
-  const handleSaveArrangement = async () => {
-    if (!newArrangementName.trim()) return;
-    try {
-      await saveArrangement(newArrangementName.trim());
-      setNewArrangementName("");
-      await fetchArrangements();
-      Alert.alert("Success", "Arrangement saved");
-    } catch (e: any) {
-      Alert.alert("Error", e.message);
-    }
-  };
+  useEffect(() => {
+    if (!sessionId) return;
+    const ws = new DashboardWebSocket(
+      `/ws/session/${sessionId}/output`,
+      handleMessage
+    );
+    ws.connect();
+    wsRef.current = ws;
+    setConnected(false);
+    return () => {
+      ws.disconnect();
+      wsRef.current = null;
+    };
+  }, [sessionId, handleMessage]);
 
-  const handleRestoreArrangement = async (name: string) => {
-    try {
-      await restoreArrangement(name);
-    } catch (e: any) {
-      Alert.alert("Error", e.message);
-    }
-  };
+  // Hide bottom tab bar while the keyboard is open so the modifier-keys row
+  // sits flush against the keyboard.
+  useEffect(() => {
+    const show = Keyboard.addListener(
+      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow",
+      () => {
+        (nav as any).getParent()?.setOptions({
+          tabBarStyle: { display: "none" },
+        });
+      }
+    );
+    const hide = Keyboard.addListener(
+      Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide",
+      () => {
+        (nav as any).getParent()?.setOptions({
+          tabBarStyle: undefined,
+        });
+      }
+    );
+    return () => {
+      show.remove();
+      hide.remove();
+      (nav as any).getParent()?.setOptions({ tabBarStyle: undefined });
+    };
+  }, [nav]);
 
-  return (
-    <ScrollView
-      style={styles.container}
-      contentContainerStyle={styles.content}
-    >
-      {/* Tab / Pane Controls */}
-      <Text style={styles.sectionTitle}>Tab & Pane Management</Text>
-      <View style={styles.buttonRow}>
-        <TouchableOpacity style={styles.btn} onPress={handleNewTab}>
-          <Text style={styles.btnText}>New Tab</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.btn} onPress={handleSplitV}>
-          <Text style={styles.btnText}>Split |</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.btn} onPress={handleSplitH}>
-          <Text style={styles.btnText}>Split --</Text>
-        </TouchableOpacity>
-      </View>
+  const handleSend = useCallback(
+    async (text: string, newline = true) => {
+      if (!sessionId) return;
+      try {
+        await sendText(sessionId, text, newline);
+      } catch {
+        wsRef.current?.send({ type: "send", text, newline });
+      }
+    },
+    [sessionId]
+  );
 
-      {/* Current Layout */}
-      <Text style={styles.sectionTitle}>Current Sessions</Text>
-      <View style={styles.layoutGrid}>
-        {sessions.map((session) => (
-          <View key={session.session_id} style={styles.layoutCell}>
-            <Text style={styles.cellName} numberOfLines={1}>
-              {session.name || "Shell"}
-            </Text>
-            <Text style={styles.cellSize}>
-              {session.grid_size.width}x{session.grid_size.height}
+  if (!resolvedSession) {
+    return (
+      <View
+        style={{
+          flex: 1,
+          backgroundColor: t.colors.bg,
+          padding: 20,
+        }}
+      >
+        <View
+          style={{
+            flex: 1,
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 12,
+          }}
+        >
+          <View
+            style={{
+              width: 56,
+              height: 56,
+              borderRadius: 12,
+              borderWidth: 1,
+              borderColor: t.colors.border,
+              backgroundColor: t.colors.bgElev,
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <Text
+              style={{
+                fontFamily: t.fonts.mono,
+                fontSize: 22,
+                color: t.colors.fgMuted,
+              }}
+            >
+              ›_
             </Text>
           </View>
-        ))}
-        {sessions.length === 0 && (
-          <Text style={styles.emptyText}>No sessions</Text>
-        )}
+          <Text
+            style={{
+              fontSize: 16,
+              fontWeight: "600",
+              color: t.colors.fg,
+              marginTop: 8,
+            }}
+          >
+            No session attached
+          </Text>
+          <Pressable
+            onPress={() => router.push("/(tabs)/sessions")}
+            style={({ pressed }) => ({
+              marginTop: 12,
+              paddingHorizontal: 16,
+              paddingVertical: 10,
+              borderRadius: 8,
+              backgroundColor: t.colors.fg,
+              opacity: pressed ? 0.8 : 1,
+            })}
+          >
+            <Text
+              style={{ color: t.colors.bg, fontWeight: "600", fontSize: 13 }}
+            >
+              Open Sessions
+            </Text>
+          </Pressable>
+        </View>
       </View>
+    );
+  }
 
-      {/* Arrangements */}
-      <Text style={styles.sectionTitle}>Window Arrangements</Text>
-      <View style={styles.saveRow}>
-        <TextInput
-          style={styles.input}
-          value={newArrangementName}
-          onChangeText={setNewArrangementName}
-          placeholder="Arrangement name"
-          placeholderTextColor={theme.colors.textMuted}
-          autoCapitalize="none"
-        />
-        <TouchableOpacity
-          style={styles.saveBtn}
-          onPress={handleSaveArrangement}
-        >
-          <Text style={styles.saveBtnText}>Save</Text>
-        </TouchableOpacity>
-      </View>
-
-      {arrangements.map((name) => (
-        <TouchableOpacity
-          key={name}
-          style={styles.arrangementItem}
-          onPress={() => handleRestoreArrangement(name)}
-        >
-          <Text style={styles.arrangementName}>{name}</Text>
-          <Text style={styles.arrangementAction}>Restore</Text>
-        </TouchableOpacity>
-      ))}
-    </ScrollView>
+  return (
+    <KeyboardAvoidingView
+      style={{ flex: 1, backgroundColor: t.colors.termBg }}
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+    >
+      <Pressable
+        style={{ flex: 1 }}
+        onPress={() => inputRef.current?.focus()}
+      >
+        <TerminalOutput lines={lines} cursor={cursor} />
+      </Pressable>
+      <CommandInput ref={inputRef} onSend={handleSend} />
+    </KeyboardAvoidingView>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: theme.colors.background,
-  },
-  content: {
-    padding: theme.spacing.md,
-    gap: theme.spacing.md,
-  },
-  sectionTitle: {
-    fontSize: theme.fontSize.lg,
-    fontWeight: "700",
-    color: theme.colors.text,
-  },
-  buttonRow: {
-    flexDirection: "row",
-    gap: 10,
-  },
-  btn: {
-    flex: 1,
-    backgroundColor: theme.colors.surface,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: theme.borderRadius.sm,
-    padding: 14,
-    alignItems: "center",
-  },
-  btnText: {
-    color: theme.colors.primary,
-    fontWeight: "600",
-    fontSize: theme.fontSize.sm,
-  },
-  layoutGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-  },
-  layoutCell: {
-    backgroundColor: theme.colors.surface,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: theme.borderRadius.sm,
-    padding: 10,
-    minWidth: "45%",
-    flexGrow: 1,
-  },
-  cellName: {
-    color: theme.colors.text,
-    fontSize: theme.fontSize.sm,
-    fontWeight: "600",
-  },
-  cellSize: {
-    color: theme.colors.textMuted,
-    fontSize: theme.fontSize.xs,
-    fontFamily: "Courier",
-    marginTop: 2,
-  },
-  emptyText: {
-    color: theme.colors.textMuted,
-    fontSize: theme.fontSize.sm,
-  },
-  saveRow: {
-    flexDirection: "row",
-    gap: 8,
-  },
-  input: {
-    flex: 1,
-    backgroundColor: theme.colors.surface,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: theme.borderRadius.sm,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    color: theme.colors.text,
-    fontSize: theme.fontSize.sm,
-  },
-  saveBtn: {
-    backgroundColor: theme.colors.primary,
-    borderRadius: theme.borderRadius.sm,
-    paddingHorizontal: 20,
-    justifyContent: "center",
-  },
-  saveBtnText: {
-    color: "#fff",
-    fontWeight: "600",
-    fontSize: theme.fontSize.sm,
-  },
-  arrangementItem: {
-    backgroundColor: theme.colors.surface,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: theme.borderRadius.sm,
-    padding: 14,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  arrangementName: {
-    color: theme.colors.text,
-    fontSize: theme.fontSize.md,
-  },
-  arrangementAction: {
-    color: theme.colors.primary,
-    fontSize: theme.fontSize.sm,
-    fontWeight: "600",
-  },
-});
